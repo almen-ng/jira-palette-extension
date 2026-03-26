@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Jira Label Palette",
-  "description": "Apply common Jira labels with one click.",
+  "name": "Jira Palette",
+  "description": "Fast Jira actions in one place.",
   "version": "0.1.0",
   "permissions": [
     "storage",
@@ -10,10 +10,11 @@
   ],
   "host_permissions": [
     "*://*.atlassian.net/*",
-    "*://jira.*/*"
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "action": {
-    "default_title": "Jira Label Palette",
+    "default_title": "Jira Palette",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
@@ -30,8 +31,7 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*.atlassian.net/*",
-        "*://jira.*/*"
+        "*://*.atlassian.net/*"
       ],
       "js": [
         "content.js"

@@ -3,18 +3,97 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Jira Label Palette</title>
+    <title>Jira Palette</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="container">
-      <h1>Jira Label Palette</h1>
-      <p class="subtitle">Click a label to add it in Jira.</p>
-      <div id="labels" class="labels"></div>
-      <div class="footer">
-        <button id="openOptions" type="button">Manage labels</button>
+      <h1>Jira Palette</h1>
+      <section class="panel suggestion-panel">
+        <div class="panel-header">
+          <h2>Suggestion Box</h2>
+          <button id="refreshSuggestionsBtn" type="button" class="suggest-btn secondary-suggest-btn">
+            Refresh
+          </button>
+        </div>
+        <div id="suggestionBox" class="suggestion-box" aria-live="polite"></div>
+      </section>
+      <div class="tabs">
+        <button id="paletteTabBtn" type="button" class="tab-btn active">Palette</button>
+        <button id="settingsTabBtn" type="button" class="tab-btn">Settings</button>
       </div>
-      <p id="status" class="status" aria-live="polite"></p>
+
+      <div id="paletteTab" class="tab-panel active">
+      <p class="subtitle">Quick triage actions for the current Jira issue.</p>
+      <section class="panel labels-panel">
+        <div class="panel-header">
+          <h2>Labels</h2>
+          <button id="suggestLabelsBtn" type="button" class="suggest-btn">Suggest labels</button>
+        </div>
+        <div class="labels-subheader">Preset</div>
+        <div id="labels" class="labels"></div>
+        <div class="labels-subheader">Suggested</div>
+        <div id="suggestedLabels" class="labels suggested-labels"></div>
+        <div class="labels-actions">
+          <button id="submitSelectedBtn" type="button">Submit selected (0)</button>
+        </div>
+        <p id="labelsStatus" class="section-status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel severity-panel">
+        <div class="panel-header">
+          <h2>Severity</h2>
+          <button id="suggestSeverityBtn" type="button" class="suggest-btn secondary-suggest-btn">
+            Suggest severity
+          </button>
+        </div>
+        <p class="panel-note">Bug issues only</p>
+        <div id="severityResult" class="severity-result" aria-live="polite"></div>
+        <div class="severity-actions">
+          <select id="severitySelect" class="severity-select" aria-label="Jira priority">
+            <option value="Critical">Critical</option>
+            <option value="Important" selected>Important</option>
+            <option value="Moderate">Moderate</option>
+            <option value="Low">Low</option>
+            <option value="Informational">Informational</option>
+          </select>
+          <button id="applySeverityBtn" type="button" class="severity-apply-btn">Apply severity</button>
+        </div>
+        <p id="severityStatus" class="section-status" aria-live="polite"></p>
+      </section>
+      </div>
+
+      <div id="settingsTab" class="tab-panel">
+        <p class="subtitle">Configure behavior and advanced options.</p>
+        <section class="panel settings-card">
+          <h2>Settings</h2>
+          <label for="presetLabelsInput" class="settings-field-label">Preset labels</label>
+          <textarea
+            id="presetLabelsInput"
+            class="settings-textarea"
+            rows="6"
+            spellcheck="false"
+            placeholder="One label per line"
+          ></textarea>
+          <button id="savePresetLabelsBtn" type="button" class="settings-secondary-btn">Save preset labels</button>
+          <p class="settings-help">Type one label per line. These appear in the Preset section.</p>
+          <button id="openOptions" type="button" class="settings-primary-btn">Manage labels</button>
+          <label class="overlay-toggle settings-toggle">
+            <input id="overlayToggleInput" type="checkbox" />
+            Enable floating overlay on Jira pages
+          </label>
+          <label class="overlay-toggle settings-toggle settings-sub-toggle">
+            <input id="overlayShowLabelsInput" type="checkbox" />
+            Overlay: show Labels
+          </label>
+          <label class="overlay-toggle settings-toggle settings-sub-toggle">
+            <input id="overlayShowSeverityInput" type="checkbox" />
+            Overlay: show Severity
+          </label>
+          <p class="panel-note">Use Manage labels for API credentials, Claude settings, and advanced editing.</p>
+          <p id="settingsStatus" class="section-status" aria-live="polite"></p>
+        </section>
+      </div>
     </main>
     <script src="popup.js"></script>
   </body>

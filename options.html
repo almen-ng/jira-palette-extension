@@ -3,16 +3,64 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Jira Label Palette Settings</title>
+    <title>Jira Palette Settings</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
     <main class="container">
-      <h1>Jira Label Palette Settings</h1>
+      <h1>Jira Palette Settings</h1>
       <p>One label per line.</p>
       <textarea id="labelsInput" rows="12" placeholder="bug&#10;urgent&#10;customer"></textarea>
+
+      <h2>Mode</h2>
+      <label class="field">
+        Add labels using:
+        <select id="modeSelect">
+          <option value="dom">DOM mode (no credentials)</option>
+          <option value="api">API mode (recommended)</option>
+          <option value="auto">Auto (API first, then DOM fallback)</option>
+        </select>
+      </label>
+      <label class="field inline-field">
+        <input id="overlayEnabledInput" type="checkbox" />
+        Enable floating overlay on Jira pages
+      </label>
+
+      <h2>Jira API settings</h2>
+      <label class="field">
+        Jira base URL
+        <input id="jiraBaseUrlInput" type="url" placeholder="https://your-domain.atlassian.net" />
+      </label>
+      <label class="field">
+        Jira email
+        <input id="jiraEmailInput" type="email" placeholder="you@company.com" />
+      </label>
+      <label class="field">
+        Jira API token
+        <input id="jiraTokenInput" type="password" placeholder="Paste Atlassian API token" />
+      </label>
+      <label class="field">
+        Preset project key
+        <input id="presetProjectKeyInput" type="text" placeholder="ACM" />
+      </label>
+
+      <h2>Claude suggestions</h2>
+      <label class="field">
+        Local Claude endpoint
+        <input
+          id="claudeEndpointInput"
+          type="url"
+          placeholder="http://localhost:8787/suggest-labels"
+        />
+      </label>
+      <label class="field">
+        Claude model
+        <input id="claudeModelInput" type="text" placeholder="sonnet" />
+      </label>
+
       <div class="actions">
         <button id="saveBtn" type="button">Save</button>
+        <button id="loadPresetBtn" type="button" class="secondary">Load project preset</button>
       </div>
       <p id="status" aria-live="polite"></p>
     </main>
