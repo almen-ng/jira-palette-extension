@@ -568,6 +568,31 @@ function labelKey(label) {
   return String(label || "").trim().toLowerCase();
 }
 
+/** Merge for PUT labels: keep Jira/API casing; dedupe only by case-insensitive key. */
+function mergeIssueLabelsPreserveCasing(existingLabels, selectedLabelsIterable) {
+  const out = [];
+  const seen = new Set();
+  for (const l of existingLabels) {
+    const raw = String(l || "").trim();
+    const key = labelKey(raw);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(raw);
+  }
+  for (const label of selectedLabelsIterable) {
+    const raw = String(label || "").trim();
+    const key = labelKey(raw);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(raw);
+  }
+  return out;
+}
+
 function uniqueLabelsByKey(labels) {
   const byKey = new Map();
   for (const label of labels) {
@@ -1685,13 +1710,11 @@ async function submitSelectedLabels() {
 
     const authHeader = getAuthHeader(settings.jiraEmail, settings.jiraApiToken);
     const existing = await fetchIssueLabels(settings.jiraBaseUrl, issueKey, authHeader);
-    const merged = new Set(existing);
-    for (const label of selectedLabels) {
-      merged.add(label);
-    }
+    const merged = mergeIssueLabelsPreserveCasing(existing, selectedLabels);
 
-    await setIssueLabels(settings.jiraBaseUrl, issueKey, [...merged], authHeader);
-    const addedCount = [...selectedLabels].filter((label) => !existing.has(label)).length;
+    await setIssueLabels(settings.jiraBaseUrl, issueKey, merged, authHeader);
+    const existingKeys = new Set([...existing].map((l) => labelKey(l)));
+    const addedCount = [...selectedLabels].filter((label) => !existingKeys.has(labelKey(label))).length;
     selectedLabels.clear();
     updateSubmitButtonState();
     setLabelsStatus(`Applied ${addedCount} new label(s). Refreshing page...`);

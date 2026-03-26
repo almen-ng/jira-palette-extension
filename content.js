@@ -203,7 +203,7 @@ async function resolveLabelInput() {
 }
 
 async function addJiraLabel(label) {
-  const cleanedLabel = normalizeLabel(label);
+  const cleanedLabel = String(label || "").trim();
   if (!cleanedLabel) {
     return { ok: false, error: "No label provided." };
   }
@@ -214,7 +214,7 @@ async function addJiraLabel(label) {
   }
 
   const existingLabels = getExistingLabels();
-  if (existingLabels.has(cleanedLabel)) {
+  if (existingLabels.has(normalizeLabel(cleanedLabel))) {
     return { ok: true, skipped: true, message: `Label "${cleanedLabel}" already exists.` };
   }
 
@@ -230,7 +230,7 @@ async function addJiraLabel(label) {
 
   // Re-check to confirm Jira accepted it.
   const afterLabels = getExistingLabels();
-  if (afterLabels.has(cleanedLabel)) {
+  if (afterLabels.has(normalizeLabel(cleanedLabel))) {
     return { ok: true };
   }
 
@@ -661,13 +661,11 @@ async function applyOverlaySelectedLabels(root) {
 
     const authHeader = getApiAuthHeader(settings.jiraEmail, settings.jiraApiToken);
     const existing = await fetchIssueLabelsViaApi(settings.jiraBaseUrl, issueKey, authHeader);
-    const merged = new Set(existing);
-    for (const label of overlaySelectedLabels) {
-      merged.add(normalizeLabel(label));
-    }
+    const merged = mergeLabelsPreserveCasingForApply(existing, [...overlaySelectedLabels]);
 
-    await setIssueLabelsViaApi(settings.jiraBaseUrl, issueKey, [...merged], authHeader);
-    const added = [...overlaySelectedLabels].filter((label) => !existing.has(normalizeLabel(label))).length;
+    await setIssueLabelsViaApi(settings.jiraBaseUrl, issueKey, merged, authHeader);
+    const existingKeys = new Set(existing.map((l) => normalizeLabel(l)));
+    const added = [...overlaySelectedLabels].filter((label) => !existingKeys.has(normalizeLabel(label))).length;
     overlaySelectedLabels.clear();
     updateOverlaySubmitButton(root);
     renderOverlayLabels(
@@ -768,6 +766,30 @@ async function getApiSettings() {
   };
 }
 
+function mergeLabelsPreserveCasingForApply(existingList, additions) {
+  const out = [];
+  const seen = new Set();
+  for (const l of existingList) {
+    const raw = String(l || "").trim();
+    const key = normalizeLabel(raw);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(raw);
+  }
+  for (const label of additions) {
+    const raw = String(label || "").trim();
+    const key = normalizeLabel(raw);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(raw);
+  }
+  return out;
+}
+
 async function fetchIssueLabelsViaApi(jiraBaseUrl, issueKey, authHeader) {
   const response = await fetch(
     `${jiraBaseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=labels`,
@@ -787,7 +809,7 @@ async function fetchIssueLabelsViaApi(jiraBaseUrl, issueKey, authHeader) {
 
   const data = await response.json();
   const labels = Array.isArray(data?.fields?.labels) ? data.fields.labels : [];
-  return new Set(labels.map((entry) => normalizeLabel(entry)).filter(Boolean));
+  return labels.map((entry) => String(entry || "").trim()).filter(Boolean);
 }
 
 async function setIssueLabelsViaApi(jiraBaseUrl, issueKey, labels, authHeader) {
