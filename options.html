@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jira Label Palette Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Jira Label Palette Settings</h1>
+      <p>One label per line.</p>
+      <textarea id="labelsInput" rows="12" placeholder="bug&#10;urgent&#10;customer"></textarea>
+      <div class="actions">
+        <button id="saveBtn" type="button">Save</button>
+      </div>
+      <p id="status" aria-live="polite"></p>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

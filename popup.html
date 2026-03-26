@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jira Label Palette</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Jira Label Palette</h1>
+      <p class="subtitle">Click a label to add it in Jira.</p>
+      <div id="labels" class="labels"></div>
+      <div class="footer">
+        <button id="openOptions" type="button">Manage labels</button>
+      </div>
+      <p id="status" class="status" aria-live="polite"></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
