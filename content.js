@@ -248,6 +248,98 @@ const LABELS_KEY = "labels";
 const JIRA_BASE_URL_KEY = "jiraBaseUrl";
 const JIRA_EMAIL_KEY = "jiraEmail";
 const JIRA_TOKEN_KEY = "jiraApiToken";
+const JIRA_SEVERITY_FIELD_ID_KEY = "jiraSeverityFieldId";
+const JIRA_SEVERITY_FIELD_SHAPE_KEY = "jiraSeverityFieldShape";
+const SEVERITY_FIELD_MANUAL_FALLBACK_MSG =
+  "Could not auto-detect a Severity custom field. Set Bug Severity custom field ID in Additional settings (e.g. customfield_12345). Severity is not written to Jira Priority.";
+
+function normalizeSeverityFieldShape(value) {
+  const s = String(value || "value").toLowerCase();
+  if (s === "name" || s === "string") {
+    return s;
+  }
+  return "value";
+}
+
+async function fetchJiraFields(jiraBaseUrl, authHeader) {
+  const url = `${jiraBaseUrl}/rest/api/3/field`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: authHeader
+    }
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(`Failed to list Jira fields (${response.status}): ${errorText || response.statusText}`);
+  }
+  return response.json();
+}
+
+function isJiraCustomFieldDef(field) {
+  if (!field || typeof field !== "object") {
+    return false;
+  }
+  if (field.custom === true) {
+    return true;
+  }
+  return /^customfield_\d+$/i.test(String(field.id || ""));
+}
+
+function pickSeverityCustomFieldId(fields) {
+  if (!Array.isArray(fields)) {
+    return "";
+  }
+  const custom = fields.filter(isJiraCustomFieldDef);
+  const exactNames = [
+    "Severity",
+    "SEVERITY",
+    "Bug severity",
+    "Bug Severity",
+    "Bug Severity Level"
+  ];
+  for (const want of exactNames) {
+    const wantLower = want.toLowerCase();
+    const hit = custom.find((f) => String(f.name || "").toLowerCase() === wantLower);
+    if (hit?.id) {
+      return String(hit.id).trim();
+    }
+  }
+  const loose = custom.find((f) => /\bseverity\b/i.test(String(f.name || "")));
+  if (loose?.id) {
+    return String(loose.id).trim();
+  }
+  return "";
+}
+
+async function resolveSeverityFieldId(jiraBaseUrl, authHeader, manualId) {
+  const manual = String(manualId || "").trim();
+  if (manual) {
+    return manual;
+  }
+  const fieldList = await fetchJiraFields(jiraBaseUrl, authHeader);
+  const id = pickSeverityCustomFieldId(fieldList);
+  if (!id) {
+    throw new Error(SEVERITY_FIELD_MANUAL_FALLBACK_MSG);
+  }
+  return id;
+}
+
+function buildSeverityUpdateFields(severityValue, severityFieldId, severityFieldShape) {
+  const trimmedId = String(severityFieldId || "").trim();
+  if (!trimmedId) {
+    throw new Error(SEVERITY_FIELD_MANUAL_FALLBACK_MSG);
+  }
+  const shape = severityFieldShape || "value";
+  if (shape === "name") {
+    return { [trimmedId]: { name: severityValue } };
+  }
+  if (shape === "string") {
+    return { [trimmedId]: severityValue };
+  }
+  return { [trimmedId]: { value: severityValue } };
+}
 const DEFAULT_LABELS = ["bug", "urgent", "customer", "follow-up"];
 const overlaySelectedLabels = new Set();
 
@@ -564,7 +656,7 @@ async function applyOverlaySelectedLabels(root) {
 
     const settings = await getApiSettings();
     if (!settings.jiraBaseUrl || !settings.jiraEmail || !settings.jiraApiToken) {
-      throw new Error("API settings missing. Configure Jira URL, email, and token in Manage labels.");
+      throw new Error("API settings missing. Configure Jira URL, email, and token in Additional settings.");
     }
 
     const authHeader = getApiAuthHeader(settings.jiraEmail, settings.jiraApiToken);
@@ -611,12 +703,24 @@ async function applyOverlaySeverity(root) {
 
     const settings = await getApiSettings();
     if (!settings.jiraBaseUrl || !settings.jiraEmail || !settings.jiraApiToken) {
-      throw new Error("API settings missing. Configure Jira URL, email, and token in Manage labels.");
+      throw new Error("API settings missing. Configure Jira URL, email, and token in Additional settings.");
     }
 
     const authHeader = getApiAuthHeader(settings.jiraEmail, settings.jiraApiToken);
-    await setIssuePriorityViaApi(settings.jiraBaseUrl, issueKey, severitySelect.value, authHeader);
-    setOverlayStatus(root, `Applied Jira priority: ${severitySelect.value}. Refreshing...`);
+    const severityFieldId = await resolveSeverityFieldId(
+      settings.jiraBaseUrl,
+      authHeader,
+      settings.jiraSeverityFieldId
+    );
+    await setIssueSeverityViaApi(
+      settings.jiraBaseUrl,
+      issueKey,
+      severitySelect.value,
+      authHeader,
+      severityFieldId,
+      settings.jiraSeverityFieldShape
+    );
+    setOverlayStatus(root, `Applied Severity field: ${severitySelect.value}. Refreshing...`);
     location.reload();
   } catch (error) {
     setOverlayStatus(root, error.message || "Could not apply severity.");
@@ -649,14 +753,18 @@ function getApiAuthHeader(email, token) {
 async function getApiSettings() {
   const syncResult = await chrome.storage.sync.get({
     [JIRA_BASE_URL_KEY]: "",
-    [JIRA_EMAIL_KEY]: ""
+    [JIRA_EMAIL_KEY]: "",
+    [JIRA_SEVERITY_FIELD_ID_KEY]: "",
+    [JIRA_SEVERITY_FIELD_SHAPE_KEY]: "value"
   });
   const localResult = await chrome.storage.local.get({ [JIRA_TOKEN_KEY]: "" });
 
   return {
     jiraBaseUrl: String(syncResult[JIRA_BASE_URL_KEY] || "").trim().replace(/\/+$/, ""),
     jiraEmail: String(syncResult[JIRA_EMAIL_KEY] || "").trim(),
-    jiraApiToken: String(localResult[JIRA_TOKEN_KEY] || "").trim()
+    jiraApiToken: String(localResult[JIRA_TOKEN_KEY] || "").trim(),
+    jiraSeverityFieldId: String(syncResult[JIRA_SEVERITY_FIELD_ID_KEY] || "").trim(),
+    jiraSeverityFieldShape: normalizeSeverityFieldShape(syncResult[JIRA_SEVERITY_FIELD_SHAPE_KEY])
   };
 }
 
@@ -701,7 +809,8 @@ async function setIssueLabelsViaApi(jiraBaseUrl, issueKey, labels, authHeader) {
   }
 }
 
-async function setIssuePriorityViaApi(jiraBaseUrl, issueKey, priority, authHeader) {
+async function setIssueSeverityViaApi(jiraBaseUrl, issueKey, severityValue, authHeader, severityFieldId, severityFieldShape) {
+  const fields = buildSeverityUpdateFields(severityValue, severityFieldId, severityFieldShape);
   const response = await fetch(`${jiraBaseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
     method: "PUT",
     headers: {
@@ -709,14 +818,12 @@ async function setIssuePriorityViaApi(jiraBaseUrl, issueKey, priority, authHeade
       "Content-Type": "application/json",
       Authorization: authHeader
     },
-    body: JSON.stringify({
-      fields: { priority: { name: priority } }
-    })
+    body: JSON.stringify({ fields })
   });
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
-    throw new Error(`Failed updating issue priority (${response.status}): ${errorText || response.statusText}`);
+    throw new Error(`Failed updating severity (${response.status}): ${errorText || response.statusText}`);
   }
 }
 
@@ -810,7 +917,7 @@ async function initOverlay(forceRebuild = false) {
       <div class="jp-section jp-severity-section">
         <div class="jp-section-title">Severity</div>
         <div class="jp-severity-row">
-          <select class="jp-severity-select" aria-label="Overlay Jira priority">
+          <select class="jp-severity-select" aria-label="Overlay severity field value">
             <option value="Critical">Critical</option>
             <option value="Important" selected>Important</option>
             <option value="Moderate">Moderate</option>

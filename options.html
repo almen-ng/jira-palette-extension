@@ -43,6 +43,23 @@
         Preset project key
         <input id="presetProjectKeyInput" type="text" placeholder="ACM" />
       </label>
+      <label class="field">
+        Bug Severity custom field ID (optional)
+        <input
+          id="severityFieldIdInput"
+          type="text"
+          spellcheck="false"
+          placeholder="Leave blank to auto-detect a custom field named Severity — or set customfield_… to override"
+        />
+      </label>
+      <label class="field">
+        Severity field API shape (single-select custom fields)
+        <select id="severityFieldShapeSelect">
+          <option value="value">{ "value": "…" } — most Cloud select lists</option>
+          <option value="name">{ "name": "…" }</option>
+          <option value="string">Plain string value</option>
+        </select>
+      </label>
 
       <h2>Claude suggestions</h2>
       <label class="field">

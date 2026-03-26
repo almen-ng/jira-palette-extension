@@ -10,6 +10,10 @@ const OVERLAY_SHOW_LABELS_KEY = "overlayShowLabels";
 const OVERLAY_SHOW_SEVERITY_KEY = "overlayShowSeverity";
 const CLAUDE_MODEL_KEY = "claudeModel";
 const CLAUDE_ENDPOINT_KEY = "claudeEndpoint";
+const JIRA_SEVERITY_FIELD_ID_KEY = "jiraSeverityFieldId";
+const JIRA_SEVERITY_FIELD_SHAPE_KEY = "jiraSeverityFieldShape";
+const SEVERITY_FIELD_MANUAL_FALLBACK_MSG =
+  "Could not auto-detect a Severity custom field. Set Bug Severity custom field ID in Additional settings (e.g. customfield_12345). Severity is not written to Jira Priority.";
 
 const labelsContainer = document.getElementById("labels");
 const suggestedLabelsContainer = document.getElementById("suggestedLabels");
@@ -52,7 +56,9 @@ async function getSettings() {
     [JIRA_EMAIL_KEY]: "",
     [PRESET_PROJECT_KEY]: "RHACM",
     [CLAUDE_MODEL_KEY]: "sonnet",
-    [CLAUDE_ENDPOINT_KEY]: "http://localhost:8787/suggest-labels"
+    [CLAUDE_ENDPOINT_KEY]: "http://localhost:8787/suggest-labels",
+    [JIRA_SEVERITY_FIELD_ID_KEY]: "",
+    [JIRA_SEVERITY_FIELD_SHAPE_KEY]: "value"
   });
   const localResult = await chrome.storage.local.get({ [JIRA_TOKEN_KEY]: "" });
 
@@ -68,8 +74,111 @@ async function getSettings() {
     claudeModel: String(syncResult[CLAUDE_MODEL_KEY] || "sonnet").trim(),
     claudeEndpoint: String(syncResult[CLAUDE_ENDPOINT_KEY] || "http://localhost:8787/suggest-labels")
       .trim()
-      .replace(/\/+$/, "")
+      .replace(/\/+$/, ""),
+    jiraSeverityFieldId: String(syncResult[JIRA_SEVERITY_FIELD_ID_KEY] || "").trim(),
+    jiraSeverityFieldShape: normalizeSeverityFieldShape(syncResult[JIRA_SEVERITY_FIELD_SHAPE_KEY])
   };
+}
+
+function normalizeSeverityFieldShape(value) {
+  const s = String(value || "value").toLowerCase();
+  if (s === "name" || s === "string") {
+    return s;
+  }
+  return "value";
+}
+
+function extractCustomFieldSeverityValue(raw) {
+  if (raw == null) {
+    return "";
+  }
+  if (typeof raw === "string") {
+    return raw.trim();
+  }
+  if (typeof raw === "object") {
+    return String(raw.value ?? raw.name ?? "").trim();
+  }
+  return "";
+}
+
+async function fetchJiraFields(jiraBaseUrl, authHeader) {
+  const url = `${jiraBaseUrl}/rest/api/3/field`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: authHeader
+    }
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(`Failed to list Jira fields (${response.status}): ${errorText || response.statusText}`);
+  }
+  return response.json();
+}
+
+function isJiraCustomFieldDef(field) {
+  if (!field || typeof field !== "object") {
+    return false;
+  }
+  if (field.custom === true) {
+    return true;
+  }
+  return /^customfield_\d+$/i.test(String(field.id || ""));
+}
+
+function pickSeverityCustomFieldId(fields) {
+  if (!Array.isArray(fields)) {
+    return "";
+  }
+  const custom = fields.filter(isJiraCustomFieldDef);
+  const exactNames = [
+    "Severity",
+    "SEVERITY",
+    "Bug severity",
+    "Bug Severity",
+    "Bug Severity Level"
+  ];
+  for (const want of exactNames) {
+    const wantLower = want.toLowerCase();
+    const hit = custom.find((f) => String(f.name || "").toLowerCase() === wantLower);
+    if (hit?.id) {
+      return String(hit.id).trim();
+    }
+  }
+  const loose = custom.find((f) => /\bseverity\b/i.test(String(f.name || "")));
+  if (loose?.id) {
+    return String(loose.id).trim();
+  }
+  return "";
+}
+
+async function resolveSeverityFieldId(jiraBaseUrl, authHeader, manualId) {
+  const manual = String(manualId || "").trim();
+  if (manual) {
+    return manual;
+  }
+  const fieldList = await fetchJiraFields(jiraBaseUrl, authHeader);
+  const id = pickSeverityCustomFieldId(fieldList);
+  if (!id) {
+    throw new Error(SEVERITY_FIELD_MANUAL_FALLBACK_MSG);
+  }
+  return id;
+}
+
+function buildSeverityUpdateFields(severityValue, severityFieldId, severityFieldShape) {
+  const trimmedId = String(severityFieldId || "").trim();
+  if (!trimmedId) {
+    throw new Error(SEVERITY_FIELD_MANUAL_FALLBACK_MSG);
+  }
+  const shape = severityFieldShape || "value";
+  if (shape === "name") {
+    return { [trimmedId]: { name: severityValue } };
+  }
+  if (shape === "string") {
+    return { [trimmedId]: severityValue };
+  }
+  return { [trimmedId]: { value: severityValue } };
 }
 
 function setLabelsStatus(message) {
@@ -178,10 +287,12 @@ async function fetchIssueType(jiraBaseUrl, issueKey, authHeader) {
   return String(data?.fields?.issuetype?.name || "").trim().toLowerCase();
 }
 
-async function fetchIssueDetails(jiraBaseUrl, issueKey, authHeader) {
-  const url = `${jiraBaseUrl}/rest/api/3/issue/${encodeURIComponent(
-    issueKey
-  )}?fields=labels,fixVersions,issuetype,versions,priority`;
+async function fetchIssueDetails(jiraBaseUrl, issueKey, authHeader, severityFieldId = "") {
+  const extra = String(severityFieldId || "").trim();
+  const fieldList = extra
+    ? `labels,fixVersions,issuetype,versions,${extra}`
+    : "labels,fixVersions,issuetype,versions";
+  const url = `${jiraBaseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=${encodeURIComponent(fieldList)}`;
   const response = await fetch(url, {
     method: "GET",
     headers: {
@@ -199,15 +310,19 @@ async function fetchIssueDetails(jiraBaseUrl, issueKey, authHeader) {
   const affectsVersions = Array.isArray(data?.fields?.versions)
     ? data.fields.versions.map((entry) => String(entry?.name || "").trim()).filter(Boolean)
     : [];
-  const priorityName = String(data?.fields?.priority?.name || "").trim();
+  const fields = data?.fields || {};
+  let severityDisplay = "";
+  if (extra) {
+    severityDisplay = extractCustomFieldSeverityValue(fields[extra]);
+  }
   return {
-    labels: Array.isArray(data?.fields?.labels) ? data.fields.labels.map((l) => String(l || "").trim()).filter(Boolean) : [],
-    fixVersions: Array.isArray(data?.fields?.fixVersions)
-      ? data.fields.fixVersions.map((entry) => String(entry?.name || "").trim()).filter(Boolean)
+    labels: Array.isArray(fields?.labels) ? fields.labels.map((l) => String(l || "").trim()).filter(Boolean) : [],
+    fixVersions: Array.isArray(fields?.fixVersions)
+      ? fields.fixVersions.map((entry) => String(entry?.name || "").trim()).filter(Boolean)
       : [],
     affectsVersions,
-    priorityName,
-    issueType: String(data?.fields?.issuetype?.name || "").trim()
+    priorityName: severityDisplay,
+    issueType: String(fields?.issuetype?.name || "").trim()
   };
 }
 
@@ -233,8 +348,9 @@ async function setIssueLabels(jiraBaseUrl, issueKey, labels, authHeader) {
   }
 }
 
-async function setIssuePriority(jiraBaseUrl, issueKey, priority, authHeader) {
+async function setIssueSeverity(jiraBaseUrl, issueKey, severityValue, authHeader, severityFieldId, severityFieldShape) {
   const url = `${jiraBaseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}`;
+  const fields = buildSeverityUpdateFields(severityValue, severityFieldId, severityFieldShape);
   const response = await fetch(url, {
     method: "PUT",
     headers: {
@@ -242,16 +358,12 @@ async function setIssuePriority(jiraBaseUrl, issueKey, priority, authHeader) {
       "Content-Type": "application/json",
       Authorization: authHeader
     },
-    body: JSON.stringify({
-      fields: {
-        priority: { name: priority }
-      }
-    })
+    body: JSON.stringify({ fields })
   });
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
-    throw new Error(`Failed to set priority (${response.status}): ${errorText || response.statusText}`);
+    throw new Error(`Failed to set severity (${response.status}): ${errorText || response.statusText}`);
   }
 }
 
@@ -605,6 +717,100 @@ function pickFallbackLabelsFromExisting(context, allowedLabels) {
     .map((entry) => entry.label);
 }
 
+const QE_CONFIDENCE_LABELS = ["QE-Confidence:Green", "QE-Confidence:Yellow", "QE-Confidence:Red"];
+
+/** Preferred order when merging project labels into Claude candidates (must exist on the project). */
+const QE_LABEL_CANDIDATE_HINTS = [
+  "QE-ACM",
+  "QE-Required",
+  "QE-NotApplicable",
+  ...QE_CONFIDENCE_LABELS
+];
+
+function hasQeConfidenceLabel(labels) {
+  return labels.some((l) => /^qe-confidence:/i.test(String(l || "").trim()));
+}
+
+function hasQeAcmLabel(labels) {
+  return labels.some((l) => labelKey(l) === "qe-acm");
+}
+
+function hasQeRequiredLabel(labels) {
+  return labels.some((l) => labelKey(l) === "qe-required");
+}
+
+function hasQeNotApplicableLabel(labels) {
+  return labels.some((l) => labelKey(l) === "qe-notapplicable");
+}
+
+function hasQeRequiredOrNotApplicable(labels) {
+  return hasQeRequiredLabel(labels) || hasQeNotApplicableLabel(labels);
+}
+
+/** Drop conflicting QE-Required / QE-NotApplicable from suggestions vs existing issue labels. */
+function applyQeRequiredNotApplicableGuards(suggested, existingLabels) {
+  const existing = Array.isArray(existingLabels) ? existingLabels : [];
+  let out = suggested.filter((l) => {
+    const k = labelKey(l);
+    if (hasQeRequiredLabel(existing) && k === "qe-notapplicable") {
+      return false;
+    }
+    if (hasQeNotApplicableLabel(existing) && k === "qe-required") {
+      return false;
+    }
+    return true;
+  });
+  const idxReq = out.findIndex((l) => labelKey(l) === "qe-required");
+  const idxNa = out.findIndex((l) => labelKey(l) === "qe-notapplicable");
+  if (idxReq !== -1 && idxNa !== -1) {
+    const dropNotApplicable = idxReq < idxNa;
+    out = out.filter((l) => {
+      const k = labelKey(l);
+      if (dropNotApplicable && k === "qe-notapplicable") {
+        return false;
+      }
+      if (!dropNotApplicable && k === "qe-required") {
+        return false;
+      }
+      return true;
+    });
+  }
+  return out;
+}
+
+function issueTextSuggestsQeScope(summary, description, title) {
+  const text = [summary, description, title].join(" ").toLowerCase();
+  if (/\bqe\b/.test(text) || /\bquality engineering\b/.test(text)) {
+    return true;
+  }
+  if (/\bqe[- ]task\b/.test(text) || /\btest automation\b/.test(text)) {
+    return true;
+  }
+  if (/\bregression\b/.test(text) && /\b(test|qe)\b/.test(text)) {
+    return true;
+  }
+  if (/\be2e\b/.test(text) || /\binterop\b/.test(text) || /\btest plan\b/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function mergeQeHintsIntoCandidates(candidateLabels, ...pools) {
+  const flat = pools.flat().filter(Boolean);
+  const pool = uniqueLabelsByKey([...flat, ...candidateLabels]);
+  const poolByKey = new Map(pool.map((l) => [labelKey(l), l]));
+  const seen = new Set(candidateLabels.map((l) => labelKey(l)));
+  const extra = [];
+  for (const hint of QE_LABEL_CANDIDATE_HINTS) {
+    const k = labelKey(hint);
+    if (poolByKey.has(k) && !seen.has(k)) {
+      extra.push(poolByKey.get(k));
+      seen.add(k);
+    }
+  }
+  return [...extra, ...candidateLabels];
+}
+
 const DELIVERY_SUGGESTION_GUIDELINES = [
   "Guidelines for what to add or set on the issue:",
   "1) cross-squad: If work involves multiple squads working concurrently, recommend adding label cross-squad.",
@@ -621,7 +827,10 @@ const DELIVERY_SUGGESTION_GUIDELINES = [
   "8) Story – Engineering status: use labels (exact text): `Eng-Status:Green` (on track), `Eng-Status:Yellow` (at risk to miss Train), `Eng-Status:Red` (high risk / re-plan).",
   "   Pick the label that matches the story’s status; only one primary Eng-Status label should apply.",
   "   EXCEPTION — Do NOT recommend Eng-Status labels if the issue is QE-related: issue type name indicates QE work (e.g. QE Task), OR the issue has label `qe` or a label clearly scoped to QE (e.g. starts with `qe-` or `qe:`).",
-  "9) Bug: set Affects Version/s (which releases are impacted) and set Severity (Jira Priority: Critical, Important, Moderate, Low, Informational) appropriately."
+  "9) Bug: set Affects Version/s (which releases are impacted) and set the **Severity** field (Critical, Important, Moderate, Low, Informational)—not Jira system Priority unless your project maps them the same.",
+  "10) QE — QE-ACM: For Epic, Story, or Sub-task that is QE team–specific work, recommend label `QE-ACM`. For Tasks raised under product Stories that require QE work (including automation that adds this label), recommend `QE-ACM` when that policy applies.",
+  "11) QE — Confidence (Epics and Stories): Exactly one of `QE-Confidence:Green` (QE on track for the train), `QE-Confidence:Yellow` (some risk of missing the train; mitigation in progress), or `QE-Confidence:Red` (high risk of missing the train; corrective discussion needed).",
+  "12) QE — Required vs not applicable (Stories; Epics follow the same policy when applicable): The issue MUST have exactly one of `QE-Required` (QE effort is needed) OR `QE-NotApplicable` (no QE effort; label by Engineering or QE no later than sprint planning). Never recommend both; if one is already on the issue, do not suggest the other. Use summary/description to choose when obvious (e.g. explicit no-QE / docs-only vs needs validation)."
 ].join("\n");
 
 function parseSuggestionBoxFromClaude(text) {
@@ -696,6 +905,7 @@ function buildSuggestionBoxPrompt(context, details, issueKey) {
     `QE-related (exclude Eng-Status suggestions if true): ${qeRelated ? "yes" : "no"}`,
     `Issue type is Spike (exclude spike label suggestions if true): ${isSpikeIssueType ? "yes" : "no"}`,
     `Issue type is Epic (Epic Color Status guideline applies only if true): ${isEpicIssueType ? "yes" : "no"}`,
+    `Story or Epic: has QE-Required or QE-NotApplicable: ${hasQeRequiredOrNotApplicable(details.labels || []) ? "yes" : "no"}`,
     "",
     `Issue key: ${issueKey}`,
     `Issue type (Jira): ${details.issueType || context?.issueType || "unknown"}`,
@@ -706,7 +916,7 @@ function buildSuggestionBoxPrompt(context, details, issueKey) {
     `Current labels on issue: ${JSON.stringify(details.labels)}`,
     `Current Fix Version/s: ${JSON.stringify(details.fixVersions)}`,
     `Current Affects Version/s: ${JSON.stringify(details.affectsVersions || [])}`,
-    `Current Jira Priority (severity): ${details.priorityName || "(none)"}`
+    `Current Severity field value: ${details.priorityName || "(none)"}`
   ]
     .filter(Boolean)
     .join("\n");
@@ -765,7 +975,18 @@ function isQeRelatedIssue({ issueType, labels }) {
   }
   for (const raw of labels || []) {
     const lab = String(raw || "").trim().toLowerCase();
-    if (lab === "qe" || lab.startsWith("qe-") || lab.startsWith("qe:")) {
+    if (lab === "qe" || lab.startsWith("qe:")) {
+      return true;
+    }
+    if (lab.startsWith("qe-")) {
+      if (
+        lab === "qe-required" ||
+        lab === "qe-notapplicable" ||
+        lab === "qe-acm" ||
+        lab.startsWith("qe-confidence:")
+      ) {
+        continue;
+      }
       return true;
     }
   }
@@ -841,7 +1062,28 @@ function buildGuidelineSuggestions({ context, labels, fixVersions, affectsVersio
     const pri = String(priorityName || "").trim();
     if (!pri) {
       suggestions.push(
-        "Bug: set **Severity** (Jira Priority: Critical, Important, Moderate, Low, Informational)."
+        "Bug: set **Severity** field (Critical, Important, Moderate, Low, Informational)."
+      );
+    }
+  }
+
+  const qeScope = qeRelated || issueTextSuggestsQeScope(context?.summary, context?.description, context?.title);
+  const qeAcmTypes = new Set(["epic", "story", "sub-task", "subtask", "task"]);
+  if (qeAcmTypes.has(typeNorm) && qeScope && !hasQeAcmLabel(labels)) {
+    suggestions.push(
+      "QE: add `QE-ACM` if this issue is QE team–specific work (Epic/Story/Sub-task), or a Task under a Story that requires QE."
+    );
+  }
+  if ((typeNorm === "epic" || typeNorm === "story") && qeScope && !hasQeConfidenceLabel(labels)) {
+    suggestions.push(
+      "QE: set one `QE-Confidence:Green`, `QE-Confidence:Yellow`, or `QE-Confidence:Red` for train/release confidence (Epic/Story)."
+    );
+  }
+
+  if (typeNorm === "story" || typeNorm === "epic") {
+    if (!hasQeRequiredOrNotApplicable(labels)) {
+      suggestions.push(
+        "QE: set exactly one of `QE-Required` or `QE-NotApplicable` (QE effort needed vs not; Engineering/QE by sprint planning)."
       );
     }
   }
@@ -869,13 +1111,28 @@ async function refreshSuggestionBox() {
 
     if (!settings.jiraBaseUrl || !settings.jiraEmail || !settings.jiraApiToken) {
       setSuggestionItems([
-        "Configure Jira API URL/email/token in Manage labels to analyze labels and Fix Version/s."
+        "Configure Jira API URL/email/token in Additional settings to analyze labels and Fix Version/s."
       ]);
       return;
     }
 
     const authHeader = getAuthHeader(settings.jiraEmail, settings.jiraApiToken);
-    const details = await fetchIssueDetails(settings.jiraBaseUrl, issueKey, authHeader);
+    let severityFieldId = "";
+    try {
+      severityFieldId = await resolveSeverityFieldId(
+        settings.jiraBaseUrl,
+        authHeader,
+        settings.jiraSeverityFieldId
+      );
+    } catch (_resolveErr) {
+      severityFieldId = "";
+    }
+    const details = await fetchIssueDetails(
+      settings.jiraBaseUrl,
+      issueKey,
+      authHeader,
+      severityFieldId
+    );
     const fallback = buildGuidelineSuggestions({
       context,
       labels: details.labels,
@@ -887,7 +1144,7 @@ async function refreshSuggestionBox() {
 
     if (!settings.claudeEndpoint) {
       setSuggestionItems([
-        "Set Local Claude endpoint in Manage labels (and run local-claude-bridge) for AI suggestion box.",
+        "Set Local Claude endpoint in Additional settings (and run local-claude-bridge) for AI suggestion box.",
         ...fallback
       ]);
       return;
@@ -916,7 +1173,7 @@ async function refreshSuggestionBox() {
 
 async function requestClaudeLabelSuggestions(context, settings, allowedLabels, issueDetails) {
   if (!settings.claudeEndpoint) {
-    throw new Error("Local Claude endpoint is missing. Add it in Manage labels.");
+    throw new Error("Local Claude endpoint is missing. Add it in Additional settings.");
   }
 
   const details = issueDetails || {};
@@ -945,10 +1202,15 @@ async function requestClaudeLabelSuggestions(context, settings, allowedLabels, i
     qeRelated
       ? "QE-related issue (QE issue type or label qe / qe-* / qe:*): do NOT suggest any `Eng-Status:*` labels even if they appear in ALLOWED_LABELS."
       : "Examples: concurrent multi-squad work (not dependency-only) → `cross-squad` if in list; Story status → `Eng-Status:Green`, `Eng-Status:Yellow`, or `Eng-Status:Red` if in list; previews → `dev-preview` or `tech-preview`; train / side-train / spike when the text matches and the label exists in ALLOWED_LABELS.",
+    "QE labels (when scope fits AND the label appears in ALLOWED_LABELS): `QE-ACM` for QE-owned Epic/Story/Sub-task or Tasks tied to Stories requiring QE; exactly one `QE-Confidence:Green|Yellow|Red` for Epic/Story when QE train confidence applies; for Story or Epic, exactly one of `QE-Required` OR `QE-NotApplicable` when neither is on the issue—never both; use text to choose (QE-NotApplicable = no QE effort per policy).",
     "",
     DELIVERY_SUGGESTION_GUIDELINES,
     "",
     `QE-related (never suggest Eng-Status if yes): ${qeRelated ? "yes" : "no"}`,
+    `QE scope by text (QE-ACM / Confidence): ${
+      issueTextSuggestsQeScope(context.summary, context.description, context.title) || qeRelated ? "yes" : "no"
+    }`,
+    `Story or Epic: QE-Required / QE-NotApplicable already on issue: ${hasQeRequiredOrNotApplicable(onIssue) ? "yes" : "no"}`,
     `Issue type is Spike (do not suggest label spike): ${isSpikeIssueType ? "yes" : "no"}`,
     `Issue type is Epic (Color Status / epic reporting applies only if yes): ${isEpicIssueType ? "yes" : "no"}`,
     "",
@@ -960,7 +1222,7 @@ async function requestClaudeLabelSuggestions(context, settings, allowedLabels, i
     `Labels already on this issue (do not suggest duplicates): ${JSON.stringify(onIssue)}`,
     `Fix Version/s: ${JSON.stringify(details.fixVersions || [])}`,
     `Affects Version/s: ${JSON.stringify(details.affectsVersions || [])}`,
-    `Jira Priority (severity): ${details.priorityName || "(unset)"}`,
+    `Severity field (current): ${details.priorityName || "(unset)"}`,
     "",
     `ALLOWED_LABELS: ${JSON.stringify(allowedLabels.slice(0, 500))}`
   ]
@@ -1051,6 +1313,16 @@ async function suggestLabels() {
     }
 
     const authHeader = getAuthHeader(settings.jiraEmail, settings.jiraApiToken);
+    let severityFieldId = "";
+    try {
+      severityFieldId = await resolveSeverityFieldId(
+        settings.jiraBaseUrl,
+        authHeader,
+        settings.jiraSeverityFieldId
+      );
+    } catch (_resolveErr) {
+      severityFieldId = "";
+    }
     const [similarLabels, projectLabels, issueDetails] = await Promise.all([
       fetchSimilarIssueLabels(
         settings.jiraBaseUrl,
@@ -1060,17 +1332,25 @@ async function suggestLabels() {
         context
       ),
       fetchProjectIssueTypeLabels(settings.jiraBaseUrl, authHeader, settings.presetProjectKey || "ACM"),
-      fetchIssueDetails(settings.jiraBaseUrl, issueKey, authHeader)
+      fetchIssueDetails(settings.jiraBaseUrl, issueKey, authHeader, severityFieldId)
     ]);
     const issueLabelKeys = new Set(issueDetails.labels.map((label) => labelKey(label)));
     const mergedRanked = uniqueLabelsByKey([...similarLabels, ...projectLabels]);
     let candidateLabels = mergedRanked.filter((label) => !issueLabelKeys.has(labelKey(label)));
 
     // Fallback to global label list only if project-scoped result is empty.
+    let globalLabelsForQePool = [];
     if (!candidateLabels.length) {
-      const globalLabels = await fetchAvailableLabels(settings.jiraBaseUrl, authHeader);
-      candidateLabels = globalLabels.filter((label) => !issueLabelKeys.has(labelKey(label)));
+      globalLabelsForQePool = await fetchAvailableLabels(settings.jiraBaseUrl, authHeader);
+      candidateLabels = globalLabelsForQePool.filter((label) => !issueLabelKeys.has(labelKey(label)));
     }
+
+    candidateLabels = mergeQeHintsIntoCandidates(
+      candidateLabels,
+      projectLabels,
+      similarLabels,
+      globalLabelsForQePool
+    );
 
     if (!candidateLabels.length) {
       throw new Error("No existing Jira labels available to suggest.");
@@ -1080,6 +1360,7 @@ async function suggestLabels() {
     if (!suggestions.length) {
       suggestions = pickFallbackLabelsFromExisting(context, candidateLabels);
     }
+    suggestions = applyQeRequiredNotApplicableGuards(suggestions, issueDetails.labels);
     if (isQeRelatedIssue({ issueType: issueDetails.issueType, labels: issueDetails.labels })) {
       suggestions = suggestions.filter((label) => !/^eng-status:/i.test(String(label || "").trim()));
     }
@@ -1195,7 +1476,7 @@ function parseClaudeSeverityPayload(text) {
 
   try {
     const parsed = JSON.parse(objectMatch[0]);
-    const priority = String(parsed?.priority || "").trim();
+    const priority = String(parsed?.priority ?? parsed?.severity ?? "").trim();
     const reason = String(parsed?.reason || "").trim();
     if (!priority) {
       return null;
@@ -1218,19 +1499,19 @@ function normalizePriority(value) {
 
 async function requestClaudeSeveritySuggestion(context, settings) {
   if (!settings.claudeEndpoint) {
-    throw new Error("Local Claude endpoint is missing. Add it in Manage labels.");
+    throw new Error("Local Claude endpoint is missing. Add it in Additional settings.");
   }
 
   const prompt = [
-    "You are suggesting Jira priority for a BUG issue.",
-    "Use only one of these Jira priorities: Critical, Important, Moderate, Low, Informational.",
+    "You are suggesting the Severity custom field value for a BUG issue (not Jira system Priority).",
+    "Use only one of these exact severity values: Critical, Important, Moderate, Low, Informational.",
     "Guidelines:",
     "- Critical: stop ship, hang, requires restart, data loss/corruption, harmful wrong data.",
     "- Important: major feature impact without full block, uninstall/cleanup/serviceability, missing/inaccurate docs.",
     "- Moderate/Low/Informational: usability, cosmetic UI/layout, minor documentation refinement/grammar/spelling.",
     "",
     "Return ONLY JSON object with shape:",
-    "{\"priority\":\"<one-of-allowed>\",\"reason\":\"<one sentence>\"}",
+    "{\"priority\":\"<one-of-allowed>\",\"reason\":\"<one sentence>\"} (severity key accepted instead of priority)",
     "",
     `Issue key: ${context.issueKey || parseIssueKeyFromUrl(context.url) || "unknown"}`,
     `Issue title: ${context.summary || context.title || ""}`,
@@ -1305,6 +1586,15 @@ async function suggestSeverity() {
       return;
     }
 
+    if (!settings.jiraBaseUrl || !settings.jiraEmail || !settings.jiraApiToken) {
+      setSeverityStatus("");
+      setSeverityResult("Configure Jira API URL, email, and token in Additional settings.");
+      return;
+    }
+
+    const authHeader = getAuthHeader(settings.jiraEmail, settings.jiraApiToken);
+    await resolveSeverityFieldId(settings.jiraBaseUrl, authHeader, settings.jiraSeverityFieldId);
+
     let result;
     try {
       result = await requestClaudeSeveritySuggestion(context, settings);
@@ -1313,7 +1603,7 @@ async function suggestSeverity() {
     }
 
     severitySelectEl.value = result.priority;
-    setSeverityResult(`Suggested Jira priority: ${result.priority}. ${result.rationale}`);
+    setSeverityResult(`Suggested severity: ${result.priority}. ${result.rationale}`);
     setSeverityStatus("");
   } catch (error) {
     setSeverityStatus(error.message || "Could not suggest severity.");
@@ -1334,7 +1624,7 @@ async function applySeverity() {
   try {
     const settings = await getSettings();
     if (!settings.jiraBaseUrl || !settings.jiraEmail || !settings.jiraApiToken) {
-      throw new Error("Configure Jira API URL, email, and token in Manage labels.");
+      throw new Error("Configure Jira API URL, email, and token in Additional settings.");
     }
 
     const issueKey = parseIssueKeyFromUrl(tab.url || "");
@@ -1344,9 +1634,21 @@ async function applySeverity() {
 
     const selectedPriority = severitySelectEl.value;
     const authHeader = getAuthHeader(settings.jiraEmail, settings.jiraApiToken);
-    await setIssuePriority(settings.jiraBaseUrl, issueKey, selectedPriority, authHeader);
+    const severityFieldId = await resolveSeverityFieldId(
+      settings.jiraBaseUrl,
+      authHeader,
+      settings.jiraSeverityFieldId
+    );
+    await setIssueSeverity(
+      settings.jiraBaseUrl,
+      issueKey,
+      selectedPriority,
+      authHeader,
+      severityFieldId,
+      settings.jiraSeverityFieldShape
+    );
     setSeverityStatus("");
-    setSeverityResult(`Applied Jira priority: ${selectedPriority}.`);
+    setSeverityResult(`Applied Severity field: ${selectedPriority}.`);
     await chrome.tabs.reload(tab.id);
   } catch (error) {
     setSeverityStatus(error.message || "Could not apply severity.");
@@ -1373,7 +1675,7 @@ async function submitSelectedLabels() {
   try {
     const settings = await getSettings();
     if (!settings.jiraBaseUrl || !settings.jiraEmail || !settings.jiraApiToken) {
-      throw new Error("Configure Jira API URL, email, and token in Manage labels.");
+      throw new Error("Configure Jira API URL, email, and token in Additional settings.");
     }
 
     const issueKey = parseIssueKeyFromUrl(tab.url || "");

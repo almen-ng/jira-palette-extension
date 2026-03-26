@@ -47,10 +47,12 @@
             Suggest severity
           </button>
         </div>
-        <p class="panel-note">Bug issues only</p>
+        <p class="panel-note">
+          Bug issues only. Writes to your Jira <strong>Severity</strong> custom field (auto-detected via API if you don’t set an ID in Additional settings—not Priority).
+        </p>
         <div id="severityResult" class="severity-result" aria-live="polite"></div>
         <div class="severity-actions">
-          <select id="severitySelect" class="severity-select" aria-label="Jira priority">
+          <select id="severitySelect" class="severity-select" aria-label="Severity field value">
             <option value="Critical">Critical</option>
             <option value="Important" selected>Important</option>
             <option value="Moderate">Moderate</option>
@@ -77,7 +79,7 @@
           ></textarea>
           <button id="savePresetLabelsBtn" type="button" class="settings-secondary-btn">Save preset labels</button>
           <p class="settings-help">Type one label per line. These appear in the Preset section.</p>
-          <button id="openOptions" type="button" class="settings-primary-btn">Manage labels</button>
+          <button id="openOptions" type="button" class="settings-primary-btn">Additional settings</button>
           <label class="overlay-toggle settings-toggle">
             <input id="overlayToggleInput" type="checkbox" />
             Enable floating overlay on Jira pages
@@ -90,7 +92,7 @@
             <input id="overlayShowSeverityInput" type="checkbox" />
             Overlay: show Severity
           </label>
-          <p class="panel-note">Use Manage labels for API credentials, Claude settings, and advanced editing.</p>
+          <p class="panel-note">Use Additional settings for API credentials, Claude settings, and advanced editing.</p>
           <p id="settingsStatus" class="section-status" aria-live="polite"></p>
         </section>
       </div>

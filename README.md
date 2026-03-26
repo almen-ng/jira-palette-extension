@@ -5,10 +5,10 @@ Click-to-apply labels and triage helpers for Jira Cloud from a Chrome popup, wit
 ## What it does
 
 - **Palette tab**: preset labels (multi-select), **Suggest labels** (Claude picks from existing Jira labels using your delivery rules), **Submit selected** via REST API, then refresh the issue.
-- **Severity** (bugs): **Suggest severity** / **Apply severity** using Jira priorities (Critical, Important, Moderate, Low, Informational) and your guidelines; status shows in the severity section.
-- **Suggestion box** (top of popup): Claude-generated checklist from your **delivery guidelines** (cross-squad, previews, train, fix versions, spike, side-train, Epic Color Status for **Epics only**, Story `Eng-Status:*` for non–QE-related stories, bugs, etc.). QE-related issues skip Eng-Status suggestions; Spike **issue type** skips redundant `spike` label hints.
-- **Settings tab**: edit **preset labels** (one per line), overlay toggles (enable overlay, show **Labels** / **Severity** sections), link to full options.
-- **Options**: Jira URL / email / API token, Claude endpoint & model, mode (API / DOM / Auto), project key for label discovery, legacy preset loader — tokens stay in `chrome.storage.local`.
+- **Severity** (bugs): **Suggest severity** / **Apply severity** updates only your Jira **Severity** custom field (not system **Priority**). If **Bug Severity custom field ID** is left blank, the extension calls `GET /rest/api/3/field` and picks a custom field whose name matches **Severity** (or contains “severity”). You can still set the ID manually to override. Configure **API shape** (`value` / `name` / plain string) if Jira rejects the default payload.
+- **Suggestion box** (top of popup): Claude-generated checklist from your **delivery guidelines** (cross-squad, previews, train, fix versions, spike, side-train, Epic Color Status for **Epics only**, Story `Eng-Status:*` for non–QE-owned stories, bugs, **QE** rules, etc.). **QE** guidance includes `QE-ACM`, `QE-Confidence:*` (Epic/Story), and **exactly one** of `QE-Required` or `QE-NotApplicable` per **Story** (Epic when policy applies). Policy-only QE labels do not suppress `Eng-Status`. QE-owned issues (QE issue type / `qe` / `qe-*` except those policy labels) skip Eng-Status suggestions; Spike **issue type** skips redundant `spike` label hints.
+- **Settings tab**: edit **preset labels** (one per line), overlay toggles (enable overlay, show **Labels** / **Severity** sections), **Additional settings** opens the full options page.
+- **Options**: Jira URL / email / API token, optional **Severity custom field ID** override + API shape, Claude endpoint & model, mode (API / DOM / Auto), project key for label discovery, legacy preset loader — tokens stay in `chrome.storage.local`.
 - **Floating overlay** on Jira (optional): same preset labels + optional severity control; positions saved per host.
 - **Labels** are stored exactly as you type them (no normalization). Suggestion matching may compare case-insensitively but keeps canonical spelling from Jira / your list.
 
@@ -35,7 +35,7 @@ Click-to-apply labels and triage helpers for Jira Cloud from a Chrome popup, wit
    ```bash
    CLAUDE_BIN="/absolute/path/to/claude" node local-claude-bridge.js
    ```
-3. **Manage labels** (options): Jira base URL, email, API token, Claude endpoint, model, mode.
+3. **Additional settings** (options page): Jira base URL, email, API token, optional Severity field ID override, Claude endpoint, model, mode.
 4. Open an issue (`…/browse/KEY-123` or `selectedIssue=`). Use the extension icon: pick labels, **Submit selected**, or use **Suggest labels** / **Suggestion box** / severity as needed.
 
 ## Local bridge API
@@ -56,13 +56,13 @@ Click-to-apply labels and triage helpers for Jira Cloud from a Chrome popup, wit
 
 | Data | Where |
 |------|--------|
-| Labels, Jira URL/email, mode, overlay flags, Claude endpoint/model, project key | `chrome.storage.sync` |
+| Labels, Jira URL/email, mode, overlay flags, Claude endpoint/model, project key, Severity field id/shape | `chrome.storage.sync` |
 | API token | `chrome.storage.local` |
 | Overlay drag position | `chrome.storage.local` (per host) |
 
 ## Notes
 
-- Label apply uses `PUT /rest/api/3/issue/{issueKey}` (`fields.labels`, `fields.priority` for severity).
+- Label apply uses `PUT /rest/api/3/issue/{issueKey}` (`fields.labels`). Bug severity uses only `fields[customFieldId]` for your **Severity** field—**Priority** is not updated by this extension.
 - JQL uses `GET /rest/api/3/search/jql` where applicable.
 - **Suggestion box** and **Suggest labels** need a working bridge + Jira API for full context (issue type, labels, fix/affects versions, priority).
 - DOM mode depends on Jira UI selectors and may need tuning on some screens.

@@ -8,6 +8,8 @@ const PRESET_PROJECT_KEY = "presetProjectKey";
 const OVERLAY_ENABLED_KEY = "overlayEnabled";
 const CLAUDE_MODEL_KEY = "claudeModel";
 const CLAUDE_ENDPOINT_KEY = "claudeEndpoint";
+const JIRA_SEVERITY_FIELD_ID_KEY = "jiraSeverityFieldId";
+const JIRA_SEVERITY_FIELD_SHAPE_KEY = "jiraSeverityFieldShape";
 
 const labelsInput = document.getElementById("labelsInput");
 const modeSelect = document.getElementById("modeSelect");
@@ -18,6 +20,8 @@ const jiraTokenInput = document.getElementById("jiraTokenInput");
 const presetProjectKeyInput = document.getElementById("presetProjectKeyInput");
 const claudeEndpointInput = document.getElementById("claudeEndpointInput");
 const claudeModelInput = document.getElementById("claudeModelInput");
+const severityFieldIdInput = document.getElementById("severityFieldIdInput");
+const severityFieldShapeSelect = document.getElementById("severityFieldShapeSelect");
 const saveBtn = document.getElementById("saveBtn");
 const loadPresetBtn = document.getElementById("loadPresetBtn");
 const statusEl = document.getElementById("status");
@@ -31,7 +35,9 @@ async function load() {
     [JIRA_EMAIL_KEY]: "",
     [PRESET_PROJECT_KEY]: "ACM",
     [CLAUDE_MODEL_KEY]: "sonnet",
-    [CLAUDE_ENDPOINT_KEY]: "http://localhost:8787/suggest-labels"
+    [CLAUDE_ENDPOINT_KEY]: "http://localhost:8787/suggest-labels",
+    [JIRA_SEVERITY_FIELD_ID_KEY]: "",
+    [JIRA_SEVERITY_FIELD_SHAPE_KEY]: "value"
   });
   const localResult = await chrome.storage.local.get({ [JIRA_TOKEN_KEY]: "" });
 
@@ -45,6 +51,8 @@ async function load() {
   presetProjectKeyInput.value = syncResult[PRESET_PROJECT_KEY];
   claudeEndpointInput.value = syncResult[CLAUDE_ENDPOINT_KEY];
   claudeModelInput.value = syncResult[CLAUDE_MODEL_KEY];
+  severityFieldIdInput.value = syncResult[JIRA_SEVERITY_FIELD_ID_KEY] || "";
+  severityFieldShapeSelect.value = syncResult[JIRA_SEVERITY_FIELD_SHAPE_KEY] || "value";
 }
 
 function parseInput(value) {
@@ -71,6 +79,8 @@ async function save() {
   const presetProjectKey = presetProjectKeyInput.value.trim().toUpperCase() || "ACM";
   const claudeEndpoint = claudeEndpointInput.value.trim().replace(/\/+$/, "");
   const claudeModel = claudeModelInput.value.trim() || "sonnet";
+  const severityFieldId = severityFieldIdInput.value.trim();
+  const severityFieldShape = severityFieldShapeSelect.value || "value";
 
   await chrome.storage.sync.set({
     [LABELS_KEY]: labels,
@@ -80,7 +90,9 @@ async function save() {
     [JIRA_EMAIL_KEY]: jiraEmail,
     [PRESET_PROJECT_KEY]: presetProjectKey,
     [CLAUDE_MODEL_KEY]: claudeModel,
-    [CLAUDE_ENDPOINT_KEY]: claudeEndpoint
+    [CLAUDE_ENDPOINT_KEY]: claudeEndpoint,
+    [JIRA_SEVERITY_FIELD_ID_KEY]: severityFieldId,
+    [JIRA_SEVERITY_FIELD_SHAPE_KEY]: severityFieldShape
   });
   await chrome.storage.local.set({ [JIRA_TOKEN_KEY]: jiraApiToken });
   statusEl.textContent = "Saved.";
